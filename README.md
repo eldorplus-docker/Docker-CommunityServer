@@ -131,23 +131,23 @@ echo "[mysqld]
 sql_mode = 'NO_ENGINE_SUBSTITUTION'
 max_connections = 1000
 max_allowed_packet = 1048576000
-group_concat_max_len = 2048
-log-error = /var/log/mysql/error.log" > /app/onlyoffice/mysql/conf.d/onlyoffice.cnf
+group_concat_max_len = 2048" > /app/onlyoffice/mysql/conf.d/onlyoffice.cnf
 ```
 
 Create the SQL script which will generate the users and issue the rights to them. The `onlyoffice_user` is required for **ONLYOFFICE Community Server**, and the `mail_admin` is required for **ONLYOFFICE Mail Server** in case it is going to be installed:
 ```
-echo "CREATE USER 'onlyoffice_user'@'localhost' IDENTIFIED BY 'onlyoffice_pass';
-CREATE USER 'mail_admin'@'localhost' IDENTIFIED BY 'Isadmin123';
-GRANT ALL PRIVILEGES ON * . * TO 'root'@'%' IDENTIFIED BY 'my-secret-pw';
-GRANT ALL PRIVILEGES ON * . * TO 'onlyoffice_user'@'%' IDENTIFIED BY 'onlyoffice_pass';
-GRANT ALL PRIVILEGES ON * . * TO 'mail_admin'@'%' IDENTIFIED BY 'Isadmin123';
+echo "ALTER USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY 'my-secret-pw';
+CREATE USER IF NOT EXISTS 'onlyoffice_user'@'%' IDENTIFIED WITH mysql_native_password BY 'onlyoffice_pass';
+CREATE USER IF NOT EXISTS 'mail_admin'@'%' IDENTIFIED WITH mysql_native_password BY 'Isadmin123';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%';
+GRANT ALL PRIVILEGES ON *.* TO 'onlyoffice_user'@'%';
+GRANT ALL PRIVILEGES ON *.* TO 'mail_admin'@'%';
 FLUSH PRIVILEGES;" > /app/onlyoffice/mysql/initdb/setup.sql
 ```
 
 *Please note, that the above script will set permissions to access SQL server from any domains (`%`). If you want to limit the access, you can specify hosts which will have access to SQL server.*
 
-Now you can create MySQL container setting MySQL version to 5.7:
+Now you can create MySQL container setting MySQL version to 8.0.29:
 ```
 sudo docker run --net onlyoffice -i -t -d --restart=always --name onlyoffice-mysql-server \
  -v /app/onlyoffice/mysql/conf.d:/etc/mysql/conf.d \
@@ -155,7 +155,7 @@ sudo docker run --net onlyoffice -i -t -d --restart=always --name onlyoffice-mys
  -v /app/onlyoffice/mysql/initdb:/docker-entrypoint-initdb.d \
  -e MYSQL_ROOT_PASSWORD=my-secret-pw \
  -e MYSQL_DATABASE=onlyoffice \
- mysql:5.7
+ mysql:8.0.29
  ```
 
 ## Installing Community Server
@@ -351,19 +351,29 @@ Then launch containers on it using the 'docker run --net onlyoffice' option:
 
 Follow [these steps](#installing-mysql) to install MySQL server.
 
-**STEP 3**: Install ONLYOFFICE Document Server.
+**STEP 3**: Generate JWT Secret
+
+JWT secret defines the secret key to validate the JSON Web Token in the request to the **ONLYOFFICE Document Server**. You can specify it yourself or easily get it using the command:
+```
+JWT_SECRET=$(cat /dev/urandom | tr -dc A-Za-z0-9 | head -c 32);
+```
+
+**STEP 4**: Install ONLYOFFICE Document Server.
 
 ```bash
 sudo docker run --net onlyoffice -i -t -d --restart=always --name onlyoffice-document-server \
-	-v /app/onlyoffice/DocumentServer/logs:/var/log/onlyoffice  \
-	-v /app/onlyoffice/DocumentServer/data:/var/www/onlyoffice/Data  \
-	-v /app/onlyoffice/DocumentServer/fonts:/usr/share/fonts/truetype/custom \
-	-v /app/onlyoffice/DocumentServer/forgotten:/var/lib/onlyoffice/documentserver/App_Data/cache/files/forgotten \
-	onlyoffice/documentserver
+ -e JWT_ENABLED=true \
+ -e JWT_SECRET=${JWT_SECRET} \
+ -e JWT_HEADER=AuthorizationJwt \
+ -v /app/onlyoffice/DocumentServer/logs:/var/log/onlyoffice  \
+ -v /app/onlyoffice/DocumentServer/data:/var/www/onlyoffice/Data  \
+ -v /app/onlyoffice/DocumentServer/fonts:/usr/share/fonts/truetype/custom \
+ -v /app/onlyoffice/DocumentServer/forgotten:/var/lib/onlyoffice/documentserver/App_Data/cache/files/forgotten \
+ onlyoffice/documentserver
 ```
 To learn more, refer to the [ONLYOFFICE Document Server documentation](https://github.com/ONLYOFFICE/Docker-DocumentServer "ONLYOFFICE Document Server documentation").
 
-**STEP 4**: Install ONLYOFFICE Mail Server. 
+**STEP 5**: Install ONLYOFFICE Mail Server. 
 
 For the mail server correct work you need to specify its hostname 'yourdomain.com'.
 To learn more, refer to the [ONLYOFFICE Mail Server documentation](https://github.com/ONLYOFFICE/Docker-MailServer "ONLYOFFICE Mail Server documentation").
@@ -384,7 +394,7 @@ sudo docker run --init --net onlyoffice --privileged -i -t -d --restart=always -
 
 The additional parameters for mail server are available [here](https://github.com/ONLYOFFICE/Docker-CommunityServer/blob/master/docker-compose.yml#L75).
 
-**STEP 5**: Install ONLYOFFICE Control Panel
+**STEP 6**: Install ONLYOFFICE Control Panel
 
 ```bash
 docker run --net onlyoffice -i -t -d --restart=always --name onlyoffice-control-panel \
@@ -394,7 +404,7 @@ docker run --net onlyoffice -i -t -d --restart=always --name onlyoffice-control-
 -v /app/onlyoffice/ControlPanel/logs:/var/log/onlyoffice onlyoffice/controlpanel
 ```
 
-**STEP 6**: Install ONLYOFFICE Community Server
+**STEP 7**: Install ONLYOFFICE Community Server
 
 ```bash
 sudo docker run --net onlyoffice -i -t -d --privileged --restart=always --name onlyoffice-community-server -p 80:80 -p 443:443 -p 5222:5222 --cgroupns=host \
@@ -402,14 +412,17 @@ sudo docker run --net onlyoffice -i -t -d --privileged --restart=always --name o
  -e MYSQL_SERVER_DB_NAME=onlyoffice \
  -e MYSQL_SERVER_HOST=onlyoffice-mysql-server \
  -e MYSQL_SERVER_USER=onlyoffice_user \
- -e MYSQL_SERVER_PASS=onlyoffice_pass \ 
- -e DOCUMENT_SERVER_PORT_80_TCP_ADDR=onlyoffice-document-server \ 
+ -e MYSQL_SERVER_PASS=onlyoffice_pass \
+ -e DOCUMENT_SERVER_PORT_80_TCP_ADDR=onlyoffice-document-server \
+ -e DOCUMENT_SERVER_JWT_ENABLED=true \
+ -e DOCUMENT_SERVER_JWT_SECRET=${JWT_SECRET} \
+ -e DOCUMENT_SERVER_JWT_HEADER=AuthorizationJwt \
  -e MAIL_SERVER_API_HOST=${MAIL_SERVER_IP} \
  -e MAIL_SERVER_DB_HOST=onlyoffice-mysql-server \
  -e MAIL_SERVER_DB_NAME=onlyoffice_mailserver \
  -e MAIL_SERVER_DB_PORT=3306 \
  -e MAIL_SERVER_DB_USER=root \
- -e MAIL_SERVER_DB_PASS=my-secret-pw \ 
+ -e MAIL_SERVER_DB_PASS=my-secret-pw \
  -e CONTROL_PANEL_PORT_80_TCP=80 \
  -e CONTROL_PANEL_PORT_80_TCP_ADDR=onlyoffice-control-panel \
  -v /app/onlyoffice/CommunityServer/data:/var/www/onlyoffice/Data \
@@ -420,7 +433,7 @@ sudo docker run --net onlyoffice -i -t -d --privileged --restart=always --name o
 ```
 Where `${MAIL_SERVER_IP}` is the IP address for **ONLYOFFICE Mail Server**. You can easily get it using the command:
 ```
-docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' onlyoffice-mail-server
+MAIL_SERVER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' onlyoffice-mail-server)
 ```
 Alternatively, you can use an automatic installation script to install ONLYOFFICE Workspace at once. For the mail server correct work you need to specify its hostname 'yourdomain.com'.
 
@@ -436,7 +449,9 @@ wget https://download.onlyoffice.com/install/workspace-install.sh
 workspace-install.sh -md yourdomain.com
 ```
 
-Or, use [docker-compose](https://docs.docker.com/compose/install "docker-compose"). First you need to clone this [GitHub repository](https://github.com/ONLYOFFICE/Docker-CommunityServer/):
+Or use [docker-compose](https://docs.docker.com/compose/install "docker-compose").
+
+First you need to clone this [GitHub repository](https://github.com/ONLYOFFICE/Docker-CommunityServer/):
 
 ```bash
 git clone https://github.com/ONLYOFFICE/Docker-CommunityServer
@@ -453,6 +468,8 @@ For the mail server correct work, open one of the files depending on the product
 * [docker-compose.yml](https://github.com/ONLYOFFICE/Docker-CommunityServer/blob/master/docker-compose.groups.yml) for Community Server (distributed as ONLYOFFICE Groups)
 * [docker-compose.yml](https://github.com/ONLYOFFICE/Docker-CommunityServer/blob/master/docker-compose.workspace.yml) for ONLYOFFICE Workspace Community Edition 
 * [docker-compose.yml](https://github.com/ONLYOFFICE/Docker-CommunityServer/blob/master/docker-compose.workspace_enterprise.yml) for ONLYOFFICE Workspace Enterprise Edition
+
+For working on `Ubuntu 22.04` and `Debian 11` or later, you need to use docker-compose versions v2.16.0 or later and uncomment the cgroup line in the yml file
 
 Then replace the `${MAIL_SERVER_HOSTNAME}` variable with your own hostname for the **Mail Server**. After that, assuming you have docker-compose installed, execute the following command:
 
